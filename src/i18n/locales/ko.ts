@@ -8,7 +8,7 @@ export default {
   "settings.remote_dir.name": "원격 디렉토리",
   "settings.remote_dir.desc": "원격 옵시디언 보관소의 절대 경로.",
   "settings.exclude_list.name": "제외 목록",
-  "settings.exclude_list.desc": "동기화에서 제외할 파일 및 디렉토리 (한 줄에 하나씩).",
+  "settings.exclude_list.desc": "동기화에서 제외할 파일 및 디렉토리 (한 줄에 하나씩). '!'를 접두어로 붙이면 제외에서 제외(강제 포함)합니다.",
   "settings.detection_method.name": "감지 방식",
   "settings.detection_method.desc": "파일 변경을 감지하는 방식.",
   "settings.detection_method.mtime": "수정 시간 (mtime)",

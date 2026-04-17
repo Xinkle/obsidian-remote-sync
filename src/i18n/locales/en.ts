@@ -8,7 +8,7 @@ export default {
   "settings.remote_dir.name": "Remote Directory",
   "settings.remote_dir.desc": "The absolute path to the remote Obsidian vault.",
   "settings.exclude_list.name": "Exclude List",
-  "settings.exclude_list.desc": "Files and directories to exclude from sync (one per line).",
+  "settings.exclude_list.desc": "Files and directories to exclude from sync (one per line). Prefix with '!' to force include (negate exclude).",
   "settings.detection_method.name": "Detection Method",
   "settings.detection_method.desc": "Method used to detect file changes.",
   "settings.detection_method.mtime": "Modification Time (mtime)",
