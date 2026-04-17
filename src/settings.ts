@@ -84,12 +84,16 @@ export class RemoteSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName(t('settings.exclude_list.name'))
       .setDesc(t('settings.exclude_list.desc'))
-      .addTextArea(text => text
-        .setValue(this.plugin.settings.excludeList)
-        .onChange(async (value) => {
-          this.plugin.settings.excludeList = value;
-          await this.plugin.saveSettings();
-        }));
+      .addTextArea(text => {
+        text.inputEl.style.width = '100%';
+        text.inputEl.style.height = '200px';
+        text.inputEl.rows = 10;
+        text.setValue(this.plugin.settings.excludeList)
+          .onChange(async (value) => {
+            this.plugin.settings.excludeList = value;
+            await this.plugin.saveSettings();
+          });
+      });
 
     new Setting(containerEl)
       .setName(t('settings.detection_method.name'))
