@@ -137,14 +137,27 @@ export interface SyncResult {
 }
 
 function isExcluded(filePath: string, settings: RemoteSyncPluginSettings): boolean {
-  const ignores = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
-  const userExcludes = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
-  const allExcludes = [...new Set([...ignores, ...userExcludes])];
+  const defaultIgnores = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
+  const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
+  
+  // Default ignores are always excluded
+  if (defaultIgnores.some(ig => filePath.includes(ig))) return true;
 
-  for (const pattern of allExcludes) {
-    if (filePath.includes(pattern)) return true;
+  // Process user patterns in order (last match wins or explicit include/exclude)
+  let excluded = false;
+  for (const pattern of userPatterns) {
+    if (pattern.startsWith('!')) {
+      const includePattern = pattern.substring(1).trim();
+      if (includePattern && filePath.includes(includePattern)) {
+        excluded = false;
+      }
+    } else {
+      if (filePath.includes(pattern)) {
+        excluded = true;
+      }
+    }
   }
-  return false;
+  return excluded;
 }
 
 export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSettings, state: SyncState, signal?: AbortSignal, dryRun?: boolean): Promise<SyncResult> {
