@@ -8,6 +8,51 @@ import * as os from 'os';
 const writeFileAsync = promisify(fs.writeFile);
 const unlinkAsync = promisify(fs.unlink);
 
+const DEFAULT_IGNORES = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
+
+export function isExcluded(filePath: string, settings: RemoteSyncPluginSettings): boolean {
+  const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
+  
+  // Default ignores are always excluded
+  if (DEFAULT_IGNORES.some(ig => filePath.includes(ig))) return true;
+
+  // Process user patterns in order (last match wins or explicit include/exclude)
+  let excluded = false;
+  for (const pattern of userPatterns) {
+    if (pattern.startsWith('!')) {
+      const includePattern = pattern.substring(1).trim();
+      if (includePattern && filePath.includes(includePattern)) {
+        excluded = false;
+      }
+    } else {
+      if (filePath.includes(pattern)) {
+        excluded = true;
+      }
+    }
+  }
+  return excluded;
+}
+
+export function getRsyncArgs(settings: RemoteSyncPluginSettings): string[] {
+  const args: string[] = [];
+  // Default ignores are absolute and come first
+  for (const ig of DEFAULT_IGNORES) {
+    args.push(`--exclude=${escapeShellArg(ig)}`);
+  }
+  const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
+  // User patterns in reverse order for "last match wins" behavior in rsync
+  for (let i = userPatterns.length - 1; i >= 0; i--) {
+    const pattern = userPatterns[i];
+    if (pattern.startsWith('!')) {
+      const p = pattern.substring(1).trim();
+      if (p) args.push(`--include=${escapeShellArg(p)}`);
+    } else {
+      args.push(`--exclude=${escapeShellArg(pattern)}`);
+    }
+  }
+  return args;
+}
+
 export async function runCommand(cmd: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const process = exec(cmd, (error, stdout, stderr) => {
@@ -45,40 +90,32 @@ export function escapeShellArg(arg: string): string {
 }
 
 function buildFindScript(dir: string, method: 'hash' | 'mtime', settings: RemoteSyncPluginSettings): string {
-  const ignores = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
-  const userExcludes = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
-  const allExcludes = [...new Set([...ignores, ...userExcludes])];
+  const pruneExpr = DEFAULT_IGNORES.map(ig => `-path "./${ig}" -o -path "*/${ig}/*"`).join(' -o ');
+  const findBase = `find . \\( ${pruneExpr} \\) -prune -o -type f`;
   
-  // Build exclude arguments for find
-  // e.g., -not -path "*/.git/*" -not -path "*/node_modules/*"
-  const ignoreArgs = allExcludes.map(ig => {
-    const pattern = ig.startsWith('*') ? ig : `*/${ig}*`;
-    return `-not -path ${escapeShellArg(pattern)}`;
-  }).join(' ');
-
   const safeDir = escapeShellArg(dir);
 
   if (method === 'hash') {
-    return `cd ${safeDir} && find . -type f ${ignoreArgs} -exec sha256sum {} + | sed 's/  /\\t/'`;
+    return `cd ${safeDir} && ${findBase} -exec sha256sum {} + | sed 's/  /\\t/'`;
   } else {
-    return `cd ${safeDir} && find . -type f ${ignoreArgs} -printf '%s_%T@\\t%p\\n'`;
+    return `cd ${safeDir} && ${findBase} -printf '%s_%T@\\t%p\\n'`;
   }
 }
 
 export async function getManifestLocal(vaultPath: string, settings: RemoteSyncPluginSettings, signal?: AbortSignal): Promise<Record<string, string>> {
   const script = buildFindScript(vaultPath, settings.detectionMethod, settings);
   const output = await runCommand(script, signal);
-  return parseManifest(output);
+  return parseManifest(output, settings);
 }
 
 export async function getManifestRemote(settings: RemoteSyncPluginSettings, signal?: AbortSignal): Promise<Record<string, string>> {
   const sshCmd = `ssh -p ${settings.sshPort} -o LogLevel=ERROR ${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}`;
   const script = buildFindScript(settings.remoteDir, settings.detectionMethod, settings);
   const output = await runCommand(`${sshCmd} ${escapeShellArg(script)}`, signal);
-  return parseManifest(output);
+  return parseManifest(output, settings);
 }
 
-export function parseManifest(output: string): Record<string, string> {
+export function parseManifest(output: string, settings: RemoteSyncPluginSettings): Record<string, string> {
   const manifest: Record<string, string> = {};
   if (!output) return manifest;
   output.split('\n').forEach(line => {
@@ -86,7 +123,9 @@ export function parseManifest(output: string): Record<string, string> {
     if (idx !== -1) {
       const hash = line.slice(0, idx);
       const filePath = line.slice(idx + 1).replace(/^\.\//, '');
-      manifest[filePath] = hash;
+      if (!isExcluded(filePath, settings)) {
+        manifest[filePath] = hash;
+      }
     }
   });
   return manifest;
@@ -96,18 +135,14 @@ export function buildRsyncCmd(vaultPath: string, settings: RemoteSyncPluginSetti
   const remote = `${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}:${escapeShellArg(settings.remoteDir)}/`;
   const local = `${escapeShellArg(vaultPath)}/`;
   
-  const ignores = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
-  const userExcludes = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
-  const allExcludes = [...new Set([...ignores, ...userExcludes])];
-
-  const excludes = allExcludes.map(e => `--exclude=${escapeShellArg(e)}`).join(' ');
+  const rsyncArgs = getRsyncArgs(settings).join(' ');
   
   const dryRunFlag = dryRun ? '-n' : '';
-  const rsyncBase = `rsync -avz ${dryRunFlag} --delete -e "ssh -p ${settings.sshPort}" ${excludes}`;
+  const rsyncBase = `rsync -avz ${dryRunFlag} --delete -e "ssh -p ${settings.sshPort}" ${rsyncArgs}`;
   
   if (file) {
     const includes = `--include=${escapeShellArg(file)} --include="*/" --exclude="*"`;
-    const rsyncSingle = `rsync -avz ${dryRunFlag} -e "ssh -p ${settings.sshPort}" ${excludes} ${includes}`;
+    const rsyncSingle = `rsync -avz ${dryRunFlag} -e "ssh -p ${settings.sshPort}" ${rsyncArgs} ${includes}`;
     if (direction === 'forward') return `${rsyncSingle} ${local} ${remote}`;
     return `${rsyncSingle} ${remote} ${local}`;
   }
@@ -134,30 +169,6 @@ export interface SyncState {
 export interface SyncResult {
   conflicts: string[];
   logs: string[];
-}
-
-function isExcluded(filePath: string, settings: RemoteSyncPluginSettings): boolean {
-  const defaultIgnores = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
-  const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
-  
-  // Default ignores are always excluded
-  if (defaultIgnores.some(ig => filePath.includes(ig))) return true;
-
-  // Process user patterns in order (last match wins or explicit include/exclude)
-  let excluded = false;
-  for (const pattern of userPatterns) {
-    if (pattern.startsWith('!')) {
-      const includePattern = pattern.substring(1).trim();
-      if (includePattern && filePath.includes(includePattern)) {
-        excluded = false;
-      }
-    } else {
-      if (filePath.includes(pattern)) {
-        excluded = true;
-      }
-    }
-  }
-  return excluded;
 }
 
 export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSettings, state: SyncState, signal?: AbortSignal, dryRun?: boolean): Promise<SyncResult> {
@@ -223,8 +234,8 @@ export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSe
   const localPath = `${escapeShellArg(vaultPath)}/`;
 
   const sshCmdBase = `ssh -p ${settings.sshPort} -o LogLevel=ERROR ${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}`;
-  const excludes = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0).map(e => `--exclude=${escapeShellArg(e)}`).join(' ');
-  const rsyncBase = `rsync -avz ${dryRunFlag} -e "ssh -p ${settings.sshPort}" ${excludes}`;
+  const rsyncArgs = getRsyncArgs(settings).join(' ');
+  const rsyncBase = `rsync -avz ${dryRunFlag} -e "ssh -p ${settings.sshPort}" ${rsyncArgs}`;
 
   // Use temporary files to avoid ARG_MAX issues
   const tempDir = os.tmpdir();
