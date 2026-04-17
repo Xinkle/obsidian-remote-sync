@@ -13,19 +13,26 @@ const DEFAULT_IGNORES = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_
 export function isExcluded(filePath: string, settings: RemoteSyncPluginSettings): boolean {
   const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
   
+  const matches = (p: string, pattern: string) => {
+    return p === pattern || 
+           p.startsWith(pattern + '/') || 
+           p.endsWith('/' + pattern) || 
+           p.includes('/' + pattern + '/');
+  };
+
   // Default ignores are always excluded
-  if (DEFAULT_IGNORES.some(ig => filePath.includes(ig))) return true;
+  if (DEFAULT_IGNORES.some(ig => matches(filePath, ig))) return true;
 
   // Process user patterns in order (last match wins or explicit include/exclude)
   let excluded = false;
   for (const pattern of userPatterns) {
     if (pattern.startsWith('!')) {
       const includePattern = pattern.substring(1).trim();
-      if (includePattern && filePath.includes(includePattern)) {
+      if (includePattern && matches(filePath, includePattern)) {
         excluded = false;
       }
     } else {
-      if (filePath.includes(pattern)) {
+      if (matches(filePath, pattern)) {
         excluded = true;
       }
     }
@@ -34,7 +41,7 @@ export function isExcluded(filePath: string, settings: RemoteSyncPluginSettings)
 }
 
 export function getRsyncArgs(settings: RemoteSyncPluginSettings): string[] {
-  const args: string[] = [];
+  const args: string[] = ['--include="*/"'];
   // Default ignores are absolute and come first
   for (const ig of DEFAULT_IGNORES) {
     args.push(`--exclude=${escapeShellArg(ig)}`);
@@ -90,7 +97,7 @@ export function escapeShellArg(arg: string): string {
 }
 
 function buildFindScript(dir: string, method: 'hash' | 'mtime', settings: RemoteSyncPluginSettings): string {
-  const pruneExpr = DEFAULT_IGNORES.map(ig => `-path "./${ig}" -o -path "*/${ig}/*"`).join(' -o ');
+  const pruneExpr = DEFAULT_IGNORES.map(ig => `-name ${escapeShellArg(ig)}`).join(' -o ');
   const findBase = `find . \\( ${pruneExpr} \\) -prune -o -type f`;
   
   const safeDir = escapeShellArg(dir);
