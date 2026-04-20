@@ -1,7 +1,7 @@
 {
   "id": "obsidian-remote-sync",
   "name": "Remote Sync",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "minAppVersion": "1.4.0",
   "description": "Two-way SSH/Rsync synchronization plugin",
   "author": "Remote Sync",

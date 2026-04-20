@@ -234,8 +234,8 @@ export default class RemoteSyncPlugin extends Plugin {
             view.addLog(t('logs.conflict_resolved', { file, dry: dryRun ? ' (DRY RUN)' : '' }), 'plugin');
             
             if (!dryRun) {
-              const localManifest = await getManifestLocal(vaultPath, this.settings, signal);
-              const remoteManifest = await getManifestRemote(this.settings, signal);
+              const localManifest = await getManifestLocal(vaultPath, this.settings, undefined, signal);
+              const remoteManifest = await getManifestRemote(this.settings, undefined, signal);
               
               if (localManifest[file]) this.state.baselineLocal[file] = localManifest[file];
               else delete this.state.baselineLocal[file];
@@ -252,8 +252,8 @@ export default class RemoteSyncPlugin extends Plugin {
       }
 
       if (!dryRun) {
-        const localManifest = await getManifestLocal(vaultPath, this.settings, signal);
-        const remoteManifest = await getManifestRemote(this.settings, signal);
+        const localManifest = await getManifestLocal(vaultPath, this.settings, undefined, signal);
+        const remoteManifest = await getManifestRemote(this.settings, undefined, signal);
 
         this.state.baselineLocal = {};
         this.state.baselineRemote = {};
