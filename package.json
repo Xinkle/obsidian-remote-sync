@@ -7,6 +7,7 @@
     "build": "node esbuild.config.mjs production"
   },
   "dependencies": {
+    "ignore": "^7.0.5",
     "obsidian": "latest"
   },
   "devDependencies": {

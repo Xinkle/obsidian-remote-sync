@@ -1,3 +1,4 @@
+import ignore, { Ignore } from 'ignore';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { RemoteSyncPluginSettings } from './settings';
@@ -10,34 +11,22 @@ const unlinkAsync = promisify(fs.unlink);
 
 const DEFAULT_IGNORES = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
 
-export function isExcluded(filePath: string, settings: RemoteSyncPluginSettings, userPatterns?: string[]): boolean {
-  const patterns = userPatterns ?? settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
+export function createIgnoreInstance(settings: RemoteSyncPluginSettings): Ignore {
+  const ig = ignore();
+  // Always ignore defaults
+  ig.add(DEFAULT_IGNORES);
   
-  const matches = (p: string, pattern: string) => {
-    return p === pattern || 
-           p.startsWith(pattern + '/') || 
-           p.endsWith('/' + pattern) || 
-           p.includes('/' + pattern + '/');
-  };
+  const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
+  ig.add(userPatterns);
+  
+  return ig;
+}
 
-  // Default ignores are always excluded
-  if (DEFAULT_IGNORES.some(ig => matches(filePath, ig))) return true;
-
-  // Process user patterns in order (last match wins or explicit include/exclude)
-  let excluded = false;
-  for (const pattern of patterns) {
-    if (pattern.startsWith('!')) {
-      const includePattern = pattern.substring(1).trim();
-      if (includePattern && matches(filePath, includePattern)) {
-        excluded = false;
-      }
-    } else {
-      if (matches(filePath, pattern)) {
-        excluded = true;
-      }
-    }
-  }
-  return excluded;
+export function isExcluded(filePath: string, settings: RemoteSyncPluginSettings, ig?: Ignore): boolean {
+  const matcher = ig ?? createIgnoreInstance(settings);
+  // ignore library requires relative paths without leading slash
+  const safePath = filePath.replace(/^\//, '');
+  return matcher.ignores(safePath);
 }
 
 export function getRsyncArgs(settings: RemoteSyncPluginSettings): string[] {
@@ -128,13 +117,13 @@ export async function getManifestRemote(settings: RemoteSyncPluginSettings, sign
 export function parseManifest(output: string, settings: RemoteSyncPluginSettings): Record<string, string> {
   const manifest: Record<string, string> = {};
   if (!output) return manifest;
-  const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
+  const ig = createIgnoreInstance(settings);
   output.split('\n').forEach(line => {
     const idx = line.indexOf('\t');
     if (idx !== -1) {
       const hash = line.slice(0, idx);
       const filePath = line.slice(idx + 1).replace(/^\.\//, '');
-      if (!isExcluded(filePath, settings, userPatterns)) {
+      if (!isExcluded(filePath, settings, ig)) {
         manifest[filePath] = hash;
       }
     }
@@ -198,8 +187,8 @@ export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSe
   ]);
 
   // Filter out excluded files to prevent them from being detected as "deleted"
-  const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
-  const filteredFiles = Array.from(allFiles).filter(f => !isExcluded(f, settings, userPatterns));
+  const ig = createIgnoreInstance(settings);
+  const filteredFiles = Array.from(allFiles).filter(f => !isExcluded(f, settings, ig));
 
   const toPush: string[] = [];
   const toPull: string[] = [];
