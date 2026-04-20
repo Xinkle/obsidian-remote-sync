@@ -306,10 +306,13 @@ export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSe
     const locChanged = loc !== baseLoc;
     const remChanged = rem !== baseRem;
 
-    if (locChanged && remChanged && loc !== rem) {
+    // Detect baseline inconsistency (e.g. from failed previous sync or manual edit of state)
+    const baselineInconsistent = baseLoc !== baseRem;
+
+    if ((locChanged && remChanged && loc !== rem) || (baselineInconsistent && !locChanged && !remChanged && loc !== rem)) {
       if (loc && rem) {
         conflicts.push(file);
-        logs.push(`Conflict detected: ${file}`);
+        logs.push(`Conflict detected: ${file}${baselineInconsistent ? ' (Inconsistent Baseline)' : ''}`);
       } else if (!loc && !rem) {
         // Both deleted -> do nothing
       } else {
