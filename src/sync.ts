@@ -118,34 +118,54 @@ export function parseManifest(output: string, ig: Ignore): Record<string, string
   return manifest;
 }
 
-export function buildRsyncCmd(vaultPath: string, settings: RemoteSyncPluginSettings, direction: 'forward' | 'backward', file?: string, dryRun?: boolean): string {
-  const remote = `${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}:${escapeShellArg(settings.remoteDir)}/`;
-  const local = `${escapeShellArg(vaultPath)}/`;
-  
-  const rsyncArgs = getRsyncArgs(settings).join(' ');
-  
-  const dryRunFlag = dryRun ? '-n' : '';
-  const rsyncBase = `rsync -avz ${dryRunFlag} --delete -e "ssh -p ${settings.sshPort}" ${rsyncArgs}`;
-  
+export async function syncForward(vaultPath: string, settings: RemoteSyncPluginSettings, file?: string, signal?: AbortSignal, dryRun?: boolean): Promise<SyncResult> {
+  const ig = createIgnoreInstance(settings);
+  const logs: string[] = [];
+
   if (file) {
-    const includes = `--include=${escapeShellArg(file)} --include="*/" --exclude="*"`;
-    const rsyncSingle = `rsync -avz ${dryRunFlag} -e "ssh -p ${settings.sshPort}" ${rsyncArgs} ${includes}`;
-    if (direction === 'forward') return `${rsyncSingle} ${local} ${remote}`;
-    return `${rsyncSingle} ${remote} ${local}`;
+    if (ig.ignores(file)) {
+      logs.push(`Skipping excluded file: ${file}`);
+      return { conflicts: [], logs };
+    }
+    await performBatchPush(vaultPath, settings, [file], signal, dryRun, logs);
+    return { conflicts: [], logs };
   }
 
-  if (direction === 'forward') return `${rsyncBase} ${local} ${remote}`;
-  return `${rsyncBase} ${remote} ${local}`;
+  const currentLocal = await getManifestLocal(vaultPath, settings, ig, signal);
+  const currentRemote = await getManifestRemote(settings, ig, signal);
+  
+  const toPush = Object.keys(currentLocal);
+  const toDeleteRemote = Object.keys(currentRemote).filter(f => !currentLocal[f]);
+
+  await performBatchPush(vaultPath, settings, toPush, signal, dryRun, logs);
+  await performBatchDeleteRemote(settings, toDeleteRemote, signal, dryRun, logs);
+
+  return { conflicts: [], logs };
 }
 
-export async function syncForward(vaultPath: string, settings: RemoteSyncPluginSettings, file?: string, signal?: AbortSignal, dryRun?: boolean) {
-  const cmd = buildRsyncCmd(vaultPath, settings, 'forward', file, dryRun);
-  await runCommand(cmd, signal);
-}
+export async function syncBackward(vaultPath: string, settings: RemoteSyncPluginSettings, file?: string, signal?: AbortSignal, dryRun?: boolean): Promise<SyncResult> {
+  const ig = createIgnoreInstance(settings);
+  const logs: string[] = [];
 
-export async function syncBackward(vaultPath: string, settings: RemoteSyncPluginSettings, file?: string, signal?: AbortSignal, dryRun?: boolean) {
-  const cmd = buildRsyncCmd(vaultPath, settings, 'backward', file, dryRun);
-  await runCommand(cmd, signal);
+  if (file) {
+    if (ig.ignores(file)) {
+      logs.push(`Skipping excluded file: ${file}`);
+      return { conflicts: [], logs };
+    }
+    await performBatchPull(vaultPath, settings, [file], signal, dryRun, logs);
+    return { conflicts: [], logs };
+  }
+
+  const currentLocal = await getManifestLocal(vaultPath, settings, ig, signal);
+  const currentRemote = await getManifestRemote(settings, ig, signal);
+  
+  const toPull = Object.keys(currentRemote);
+  const toDeleteLocal = Object.keys(currentLocal).filter(f => !currentRemote[f]);
+
+  await performBatchPull(vaultPath, settings, toPull, signal, dryRun, logs);
+  await performBatchDeleteLocal(vaultPath, toDeleteLocal, signal, dryRun, logs);
+
+  return { conflicts: [], logs };
 }
 
 export interface SyncState {
@@ -156,6 +176,88 @@ export interface SyncState {
 export interface SyncResult {
   conflicts: string[];
   logs: string[];
+}
+
+async function performBatchPull(vaultPath: string, settings: RemoteSyncPluginSettings, files: string[], signal?: AbortSignal, dryRun?: boolean, logs: string[] = []): Promise<void> {
+  if (files.length === 0 || signal?.aborted) return;
+  
+  const sshHostPrefix = `${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}:`;
+  const remotePath = `${sshHostPrefix}${escapeShellArg(settings.remoteDir)}/`;
+  const localPath = `${escapeShellArg(vaultPath)}/`;
+  const rsyncArgs = getRsyncArgs(settings).join(' ');
+  const dryRunFlag = dryRun ? '-n' : '';
+  const rsyncBase = `rsync -avz ${dryRunFlag} -e "ssh -p ${settings.sshPort}" ${rsyncArgs}`;
+  
+  logs.push(`${dryRun ? '[dry-run] ' : '' }Pulling ${files.length} files:`);
+  files.forEach(f => logs.push(`  [PULL] ${f}`));
+  
+  const tempDir = os.tmpdir();
+  const pullListPath = path.join(tempDir, `remote-sync_pull_${Date.now()}.txt`);
+  await writeFileAsync(pullListPath, files.join('\n'));
+  try {
+    const pullCmd = `${rsyncBase} --files-from=${escapeShellArg(pullListPath)} ${remotePath} ${localPath}`;
+    await runCommand(pullCmd, signal);
+  } finally {
+    await unlinkAsync(pullListPath).catch(() => {});
+  }
+}
+
+async function performBatchPush(vaultPath: string, settings: RemoteSyncPluginSettings, files: string[], signal?: AbortSignal, dryRun?: boolean, logs: string[] = []): Promise<void> {
+  if (files.length === 0 || signal?.aborted) return;
+
+  const sshHostPrefix = `${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}:`;
+  const remotePath = `${sshHostPrefix}${escapeShellArg(settings.remoteDir)}/`;
+  const localPath = `${escapeShellArg(vaultPath)}/`;
+  const rsyncArgs = getRsyncArgs(settings).join(' ');
+  const dryRunFlag = dryRun ? '-n' : '';
+  const rsyncBase = `rsync -avz ${dryRunFlag} -e "ssh -p ${settings.sshPort}" ${rsyncArgs}`;
+
+  logs.push(`${dryRun ? '[dry-run] ' : '' }Pushing ${files.length} files:`);
+  files.forEach(f => logs.push(`  [PUSH] ${f}`));
+  
+  const tempDir = os.tmpdir();
+  const pushListPath = path.join(tempDir, `remote-sync_push_${Date.now()}.txt`);
+  await writeFileAsync(pushListPath, files.join('\n'));
+  try {
+    const pushCmd = `${rsyncBase} --files-from=${escapeShellArg(pushListPath)} ${localPath} ${remotePath}`;
+    await runCommand(pushCmd, signal);
+  } finally {
+    await unlinkAsync(pushListPath).catch(() => {});
+  }
+}
+
+async function performBatchDeleteRemote(settings: RemoteSyncPluginSettings, files: string[], signal?: AbortSignal, dryRun?: boolean, logs: string[] = []): Promise<void> {
+  if (files.length === 0 || signal?.aborted) return;
+
+  const sshCmdBase = `ssh -p ${settings.sshPort} -o LogLevel=ERROR ${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}`;
+  
+  logs.push(`${dryRun ? '[dry-run] ' : '' }Deleting ${files.length} remote files:`);
+  files.forEach(f => logs.push(`  [REMOTE DELETE] ${f}`));
+  
+  const chunkSize = 100;
+  for (let i = 0; i < files.length; i += chunkSize) {
+    if (signal?.aborted) break;
+    const chunk = files.slice(i, i + chunkSize);
+    const delFiles = chunk.map(f => escapeShellArg(f)).join(' ');
+    const remoteDelCmd = dryRun ? `echo cd ${escapeShellArg(settings.remoteDir)} && echo rm -f -- ${delFiles}` : `cd ${escapeShellArg(settings.remoteDir)} && rm -f -- ${delFiles}`;
+    await runCommand(`${sshCmdBase} ${escapeShellArg(remoteDelCmd)}`, signal);
+  }
+}
+
+async function performBatchDeleteLocal(vaultPath: string, files: string[], signal?: AbortSignal, dryRun?: boolean, logs: string[] = []): Promise<void> {
+  if (files.length === 0 || signal?.aborted) return;
+
+  logs.push(`${dryRun ? '[dry-run] ' : '' }Deleting ${files.length} local files:`);
+  files.forEach(f => logs.push(`  [LOCAL DELETE] ${f}`));
+  
+  const chunkSize = 100;
+  for (let i = 0; i < files.length; i += chunkSize) {
+    if (signal?.aborted) break;
+    const chunk = files.slice(i, i + chunkSize);
+    const delFiles = chunk.map(f => escapeShellArg(path.join(vaultPath, f))).join(' ');
+    const localDelCmd = dryRun ? `echo rm -f -- ${delFiles}` : `rm -f -- ${delFiles}`;
+    await runCommand(localDelCmd, signal);
+  }
 }
 
 export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSettings, state: SyncState, signal?: AbortSignal, dryRun?: boolean): Promise<SyncResult> {
@@ -216,74 +318,10 @@ export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSe
     }
   }
   
-  const dryRunFlag = dryRun ? '-n' : '';
-  const sshHostPrefix = `${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}:`;
-  const remotePath = `${sshHostPrefix}${escapeShellArg(settings.remoteDir)}/`;
-  const localPath = `${escapeShellArg(vaultPath)}/`;
-
-  const sshCmdBase = `ssh -p ${settings.sshPort} -o LogLevel=ERROR ${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}`;
-  const rsyncArgs = getRsyncArgs(settings).join(' ');
-  const rsyncBase = `rsync -avz ${dryRunFlag} -e "ssh -p ${settings.sshPort}" ${rsyncArgs}`;
-
-  // Use temporary files to avoid ARG_MAX issues
-  const tempDir = os.tmpdir();
-  
-  // Batch Pull
-  if (toPull.length > 0 && !signal?.aborted) {
-    logs.push(`${dryRun ? '[dry-run] ' : '' }Pulling ${toPull.length} files:`);
-    toPull.forEach(f => logs.push(`  [PULL] ${f}`));
-    const pullListPath = path.join(tempDir, `remote-sync_pull_${Date.now()}.txt`);
-    await writeFileAsync(pullListPath, toPull.join('\n'));
-    try {
-      const pullCmd = `${rsyncBase} --files-from=${escapeShellArg(pullListPath)} ${remotePath} ${localPath}`;
-      await runCommand(pullCmd, signal);
-    } finally {
-      await unlinkAsync(pullListPath).catch(() => {});
-    }
-  }
-
-  // Batch Push
-  if (toPush.length > 0 && !signal?.aborted) {
-    logs.push(`${dryRun ? '[dry-run] ' : '' }Pushing ${toPush.length} files:`);
-    toPush.forEach(f => logs.push(`  [PUSH] ${f}`));
-    const pushListPath = path.join(tempDir, `remote-sync_push_${Date.now()}.txt`);
-    await writeFileAsync(pushListPath, toPush.join('\n'));
-    try {
-      const pushCmd = `${rsyncBase} --files-from=${escapeShellArg(pushListPath)} ${localPath} ${remotePath}`;
-      await runCommand(pushCmd, signal);
-    } finally {
-      await unlinkAsync(pushListPath).catch(() => {});
-    }
-  }
-
-  // Batch Delete Remote
-  if (toDeleteRemote.length > 0 && !signal?.aborted) {
-    logs.push(`${dryRun ? '[dry-run] ' : '' }Deleting ${toDeleteRemote.length} remote files:`);
-    toDeleteRemote.forEach(f => logs.push(`  [REMOTE DELETE] ${f}`));
-    // Delete in chunks of 100 to avoid ARG_MAX on remote
-    const chunkSize = 100;
-    for (let i = 0; i < toDeleteRemote.length; i += chunkSize) {
-      if (signal?.aborted) break;
-      const chunk = toDeleteRemote.slice(i, i + chunkSize);
-      const delFiles = chunk.map(f => escapeShellArg(f)).join(' ');
-      const remoteDelCmd = dryRun ? `echo cd ${escapeShellArg(settings.remoteDir)} && echo rm -f -- ${delFiles}` : `cd ${escapeShellArg(settings.remoteDir)} && rm -f -- ${delFiles}`;
-      await runCommand(`${sshCmdBase} ${escapeShellArg(remoteDelCmd)}`, signal);
-    }
-  }
-
-  // Batch Delete Local
-  if (toDeleteLocal.length > 0 && !signal?.aborted) {
-    logs.push(`${dryRun ? '[dry-run] ' : '' }Deleting ${toDeleteLocal.length} local files:`);
-    toDeleteLocal.forEach(f => logs.push(`  [LOCAL DELETE] ${f}`));
-    const chunkSize = 100;
-    for (let i = 0; i < toDeleteLocal.length; i += chunkSize) {
-      if (signal?.aborted) break;
-      const chunk = toDeleteLocal.slice(i, i + chunkSize);
-      const delFiles = chunk.map(f => escapeShellArg(path.join(vaultPath, f))).join(' ');
-      const localDelCmd = dryRun ? `echo rm -f -- ${delFiles}` : `rm -f -- ${delFiles}`;
-      await runCommand(localDelCmd, signal);
-    }
-  }
+  await performBatchPull(vaultPath, settings, toPull, signal, dryRun, logs);
+  await performBatchPush(vaultPath, settings, toPush, signal, dryRun, logs);
+  await performBatchDeleteRemote(settings, toDeleteRemote, signal, dryRun, logs);
+  await performBatchDeleteLocal(vaultPath, toDeleteLocal, signal, dryRun, logs);
 
   return { conflicts, logs };
 }

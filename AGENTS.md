@@ -29,3 +29,21 @@ The auto-sync trigger is debounced (default 10s).
 
 ### Localization Intent
 The I18n system is designed to be lightweight and zero-dependency, relying on Obsidian's internal `moment` locale. The intent is to keep the plugin accessible while maintaining a minimal bundle size.
+
+## Deployment & Release Process
+
+### Local Deployment
+For local testing and deployment to the primary vault (`~/Xync`), use the `./deploy.sh` script. This script:
+1.  Runs `npm run build` to generate the latest `main.js`.
+2.  Ensures the plugin directory exists in the `~/Xync` vault.
+3.  Copies `main.js` and `manifest.json` to the vault's plugin folder.
+
+### GitHub Release
+Official releases should be tagged and published on GitHub.
+1.  Bump the version in both `package.json` and `manifest.json`.
+2.  Run `npm run build`.
+3.  Commit and push changes to `main`.
+4.  Create and push a git tag (e.g., `v1.3.1`).
+5.  Create a GitHub Release using `gh release create`, attaching `main.js` and `manifest.json`.
+
+*Note: v1.3.1 was released manually following these steps to implement the "!" negation support in the exclude list.*

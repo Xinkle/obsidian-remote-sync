@@ -147,10 +147,15 @@ export default class RemoteSyncPlugin extends Plugin {
           return;
         }
 
+        let result;
         if (direction === 'forward') {
-          await syncForward(vaultPath, this.settings, undefined, this.abortController.signal, dryRun);
+          result = await syncForward(vaultPath, this.settings, undefined, this.abortController.signal, dryRun);
         } else {
-          await syncBackward(vaultPath, this.settings, undefined, this.abortController.signal, dryRun);
+          result = await syncBackward(vaultPath, this.settings, undefined, this.abortController.signal, dryRun);
+        }
+        
+        if (view && result.logs) {
+          result.logs.forEach(log => view.addLog(log, 'sync'));
         }
         
         if (view) view.addLog(t('logs.sync_complete', { dir: direction, dry: dryRun ? ' (DRY RUN)' : '' }), 'plugin');
@@ -217,10 +222,14 @@ export default class RemoteSyncPlugin extends Plugin {
           if (signal.aborted) return;
           view.addLog(t('logs.resolving_conflict', { file, res: resolution, dry: dryRun ? ' (DRY RUN)' : '' }), 'plugin');
           try {
+            let res;
             if (resolution === 'local') {
-              await syncForward(vaultPath, this.settings, file, signal, dryRun);
+              res = await syncForward(vaultPath, this.settings, file, signal, dryRun);
             } else {
-              await syncBackward(vaultPath, this.settings, file, signal, dryRun);
+              res = await syncBackward(vaultPath, this.settings, file, signal, dryRun);
+            }
+            if (view && res.logs) {
+              res.logs.forEach(l => view.addLog(l, 'sync'));
             }
             view.addLog(t('logs.conflict_resolved', { file, dry: dryRun ? ' (DRY RUN)' : '' }), 'plugin');
             
