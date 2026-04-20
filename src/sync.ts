@@ -1,4 +1,5 @@
-import ignore, { Ignore } from 'ignore';
+import * as ignoreModule from 'ignore';
+import { Ignore } from 'ignore';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { RemoteSyncPluginSettings } from './settings';
@@ -12,10 +13,13 @@ const unlinkAsync = promisify(fs.unlink);
 const DEFAULT_IGNORES = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
 
 export function createIgnoreInstance(settings: RemoteSyncPluginSettings): Ignore {
-  const ig = ignore();
+  // Handle different import behaviors between dev/prod and esbuild/node
+  const ignoreFunc = (ignoreModule as any).default || ignoreModule;
+  const ig = typeof ignoreFunc === 'function' ? ignoreFunc() : (ignoreFunc as any)();
+
   // Always ignore defaults
   ig.add(DEFAULT_IGNORES);
-  
+
   const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
   ig.add(userPatterns);
   
