@@ -1,4 +1,3 @@
-import * as ignoreModule from 'ignore';
 import { Ignore } from 'ignore';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -7,15 +6,25 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 
+// Use require to ensure we get the constructor function correctly in all environments
+const ignore = require('ignore');
+
 const writeFileAsync = promisify(fs.writeFile);
 const unlinkAsync = promisify(fs.unlink);
 
 const DEFAULT_IGNORES = ['.git', '.trash', 'remote_sync_state.json', 'xync_sync_state.json'];
 
 export function createIgnoreInstance(settings: RemoteSyncPluginSettings): Ignore {
-  // Handle different import behaviors between dev/prod and esbuild/node
-  const ignoreFunc = (ignoreModule as any).default || ignoreModule;
-  const ig = typeof ignoreFunc === 'function' ? ignoreFunc() : (ignoreFunc as any)();
+  // Ensure we are calling a function
+  const ignoreCreator = typeof ignore === 'function' ? ignore : (ignore as any).default;
+  if (typeof ignoreCreator !== 'function') {
+    throw new Error('ignore library failed to load correctly: constructor not found');
+  }
+  
+  const ig = ignoreCreator();
+  if (typeof ig.ignores !== 'function') {
+    throw new Error('ignore instance created but ignores() method is missing');
+  }
 
   // Always ignore defaults
   ig.add(DEFAULT_IGNORES);
