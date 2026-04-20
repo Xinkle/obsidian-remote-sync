@@ -31,24 +31,10 @@ export function isExcluded(filePath: string, settings: RemoteSyncPluginSettings,
 
 export function getRsyncArgs(settings: RemoteSyncPluginSettings): string[] {
   const args: string[] = [];
-  // Default ignores are absolute and come first to allow pruning
   for (const ig of DEFAULT_IGNORES) {
     args.push(`--exclude=${escapeShellArg(ig)}`);
   }
-  // Include all directories to support negation patterns deep in the tree
-  args.push('--include="*/"');
-
-  const userPatterns = settings.excludeList.split('\n').map(e => e.trim()).filter(e => e.length > 0);
-  // User patterns in reverse order for "last match wins" behavior in rsync
-  for (let i = userPatterns.length - 1; i >= 0; i--) {
-    const pattern = userPatterns[i];
-    if (pattern.startsWith('!')) {
-      const p = pattern.substring(1).trim();
-      if (p) args.push(`--include=${escapeShellArg(p)}`);
-    } else {
-      args.push(`--exclude=${escapeShellArg(pattern)}`);
-    }
-  }
+  // User patterns are handled in JS, so we only need system ignores here
   return args;
 }
 
@@ -101,29 +87,30 @@ function buildFindScript(dir: string, method: 'hash' | 'mtime', settings: Remote
   }
 }
 
-export async function getManifestLocal(vaultPath: string, settings: RemoteSyncPluginSettings, signal?: AbortSignal): Promise<Record<string, string>> {
+export async function getManifestLocal(vaultPath: string, settings: RemoteSyncPluginSettings, ig?: Ignore, signal?: AbortSignal): Promise<Record<string, string>> {
+  const matcher = ig ?? createIgnoreInstance(settings);
   const script = buildFindScript(vaultPath, settings.detectionMethod, settings);
   const output = await runCommand(script, signal);
-  return parseManifest(output, settings);
+  return parseManifest(output, matcher);
 }
 
-export async function getManifestRemote(settings: RemoteSyncPluginSettings, signal?: AbortSignal): Promise<Record<string, string>> {
+export async function getManifestRemote(settings: RemoteSyncPluginSettings, ig?: Ignore, signal?: AbortSignal): Promise<Record<string, string>> {
+  const matcher = ig ?? createIgnoreInstance(settings);
   const sshCmd = `ssh -p ${settings.sshPort} -o LogLevel=ERROR ${escapeShellArg(settings.sshUser + '@' + settings.sshHost)}`;
   const script = buildFindScript(settings.remoteDir, settings.detectionMethod, settings);
   const output = await runCommand(`${sshCmd} ${escapeShellArg(script)}`, signal);
-  return parseManifest(output, settings);
+  return parseManifest(output, matcher);
 }
 
-export function parseManifest(output: string, settings: RemoteSyncPluginSettings): Record<string, string> {
+export function parseManifest(output: string, ig: Ignore): Record<string, string> {
   const manifest: Record<string, string> = {};
   if (!output) return manifest;
-  const ig = createIgnoreInstance(settings);
   output.split('\n').forEach(line => {
     const idx = line.indexOf('\t');
     if (idx !== -1) {
       const hash = line.slice(0, idx);
       const filePath = line.slice(idx + 1).replace(/^\.\//, '');
-      if (!isExcluded(filePath, settings, ig)) {
+      if (!ig.ignores(filePath)) {
         manifest[filePath] = hash;
       }
     }
@@ -172,8 +159,9 @@ export interface SyncResult {
 }
 
 export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSettings, state: SyncState, signal?: AbortSignal, dryRun?: boolean): Promise<SyncResult> {
-  const currentLocal = await getManifestLocal(vaultPath, settings, signal);
-  const currentRemote = await getManifestRemote(settings, signal);
+  const ig = createIgnoreInstance(settings);
+  const currentLocal = await getManifestLocal(vaultPath, settings, ig, signal);
+  const currentRemote = await getManifestRemote(settings, ig, signal);
   const conflicts: string[] = [];
   const logs: string[] = [];
   
@@ -187,8 +175,7 @@ export async function syncTwoWay(vaultPath: string, settings: RemoteSyncPluginSe
   ]);
 
   // Filter out excluded files to prevent them from being detected as "deleted"
-  const ig = createIgnoreInstance(settings);
-  const filteredFiles = Array.from(allFiles).filter(f => !isExcluded(f, settings, ig));
+  const filteredFiles = Array.from(allFiles).filter(f => !ig.ignores(f));
 
   const toPush: string[] = [];
   const toPull: string[] = [];
